@@ -1,7 +1,11 @@
 # mcp-cerebro
 
-MCP server que conecta opencode con tu vault de Obsidian para grabar, transcribir
-y resumir las clases de tu docente.
+Sistema que conecta tu vault de Obsidian con grabación, transcripción y resumen
+de las clases de tu docente. Incluye **dos formas de uso**:
+
+1. **Interfaz gráfica (GUI)** — recomendada. App de escritorio con botones, sin
+   tocar la terminal. Ideal si no quieres usar opencode directamente.
+2. **MCP server** — conecta opencode (terminal) con el vault para el mismo flujo.
 
 ## Requisitos
 
@@ -61,6 +65,22 @@ El servidor se registra en `C:\Users\USUARIO\.config\opencode\opencode.json` (co
 
 ## Guía de ejecución
 
+### 0. Interfaz gráfica (GUI) — la forma más simple
+
+La GUI usa **Tkinter** (incluido con Python, sin dependencias extra) y llama a
+**opencode** en segundo plano para generar el resumen. No necesitas abrir la terminal.
+
+1. Doble clic en `run_gui.bat` (o crea un acceso directo en el escritorio a ese archivo).
+2. En la ventana, escribe **curso**, **sesión** y **título** de la sesión.
+3. Clic **Grabar** para empezar a capturar el audio y **Detener** al terminar la clase.
+4. Clic **Transcribir** (usa Whisper local, como el MCP).
+5. Clic **Generar resumen** (opencode resume la transcripción; la primera vez tarda un poco).
+6. Revisa el texto y clic **Guardar nota** → se escribe en el vault de Obsidian.
+7. Clic **Abrir vault** para verla en Obsidian.
+
+> Requisito: opencode debe estar instalado y en el `PATH` (p. ej. instalado por npm).
+> El resumen se genera con el modelo configurado en tu opencode.
+
 ### 1. Primera vez (solo si reinstalaste o cambiaste de PC)
 
 ```powershell
@@ -97,6 +117,9 @@ Abre Obsidian y la nota aparecerá en la carpeta del curso. El audio queda en
 | Problema | Solución |
 |---|---|
 | MCP no aparece en opencode | Reinicia opencode; revisa `C:\Users\USUARIO\.config\opencode\opencode.json` |
+| La GUI no abre | Ejecuta `run_gui.bat` con doble clic; si no, abre una terminal y corre `.venv\Scripts\python.exe cerebro_app\main.py` |
+| "No se encontró opencode" al resumir | Instala opencode o agrégalo al `PATH`; reinicia la GUI |
+| El resumen tarda | Es normal; opencode está en segundo plano. Asegúrate de tener modelo/config de opencode activos |
 | "No se pudo acceder al micrófono" | Cierra apps que usen el micrófono (Zoom, Teams); verifica que no esté silenciado |
 | "La grabación no contiene voz" | Acerca el micrófono a tu docente; sube el volumen de captura |
 | Transcripción lenta | Es normal en CPU (modelo `small`); para mayor rapidez usa `tiny` |
@@ -105,3 +128,6 @@ Abre Obsidian y la nota aparecerá en la carpeta del curso. El audio queda en
 
 - La primera transcripción descarga el modelo (`small` ≈ 460 MB) a `temporal/models`, dentro del proyecto (no al disco C).
 - Si el audio dura más de ~30 min, Whisper lo procesa por partes automáticamente.
+- **Config global de opencode:** se eliminó la variable `environment.PATH` del MCP `octave`
+  (estaba deshabilitado) porque `{env:PATH}` rompía `opencode run` con
+  `InvalidEscapeCharacter`. Si vuelves a habilitar octave, ajusta esa entrada.
