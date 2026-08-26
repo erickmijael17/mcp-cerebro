@@ -13,7 +13,7 @@ from .resumen import generar_resumen
 
 _ACCIONES = {
     "inicio": "Iniciando...",
-    "transcribir": "Transcribiendo con Whisper (la primera vez descarga el modelo)...",
+    "transcribir": "Transcribiendo... (Procesando audio)",
     "resumir": "Generando resumen con opencode...",
     "guardar": "Guardando nota en Obsidian...",
 }
@@ -23,8 +23,8 @@ class CerebroApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Cerebro - Grabación y notas de clase")
-        self.geometry("760x620")
-        self.minsize(640, 520)
+        self.geometry("780x680")
+        self.minsize(660, 560)
 
         self._recorder = Recorder()
         self._audio_path = None
@@ -34,6 +34,8 @@ class CerebroApp(tk.Tk):
         self._cola = queue.Queue()
         self._ocupado = False
 
+        self.var_auto_resumen = tk.BooleanVar(value=True)
+
         self._construir_interfaz()
         self.after(100, self._procesar_cola)
 
@@ -42,24 +44,25 @@ class CerebroApp(tk.Tk):
         marco = ttk.Frame(self, padding=12)
         marco.pack(fill="both", expand=True)
 
+        # --- Fila 0: Curso
         ttk.Label(marco, text="Curso").grid(row=0, column=0, sticky="w")
         self.var_curso = tk.StringVar()
-        ttk.Entry(marco, textvariable=self.var_curso, width=30).grid(
-            row=0, column=1, sticky="we", padx=6, pady=3
-        )
+        self.entry_curso = ttk.Entry(marco, textvariable=self.var_curso, width=32)
+        self.entry_curso.grid(row=0, column=1, sticky="we", padx=6, pady=3)
 
+        # --- Fila 1: Sesión
         ttk.Label(marco, text="Sesión").grid(row=1, column=0, sticky="w")
         self.var_sesion = tk.StringVar()
-        ttk.Entry(marco, textvariable=self.var_sesion, width=8).grid(
-            row=1, column=1, sticky="w", padx=6, pady=3
-        )
+        self.entry_sesion = ttk.Entry(marco, textvariable=self.var_sesion, width=8)
+        self.entry_sesion.grid(row=1, column=1, sticky="w", padx=6, pady=3)
 
+        # --- Fila 2: Título
         ttk.Label(marco, text="Título de la sesión").grid(row=2, column=0, sticky="w")
         self.var_titulo = tk.StringVar()
-        ttk.Entry(marco, textvariable=self.var_titulo, width=30).grid(
-            row=2, column=1, sticky="we", padx=6, pady=3
-        )
+        self.entry_titulo = ttk.Entry(marco, textvariable=self.var_titulo, width=32)
+        self.entry_titulo.grid(row=2, column=1, sticky="we", padx=6, pady=3)
 
+        # --- Fila 3: Botonera
         botonera = ttk.Frame(marco)
         botonera.grid(row=3, column=0, columnspan=2, sticky="we", pady=8)
         self.btn_grabar = ttk.Button(botonera, text="Grabar", command=self._alternar_grabacion)
@@ -81,21 +84,46 @@ class CerebroApp(tk.Tk):
         )
         self.btn_abrir.pack(side="left", padx=6)
 
-        self.var_estado = tk.StringVar(value="Listo.")
-        ttk.Label(marco, textvariable=self.var_estado).grid(
-            row=4, column=0, columnspan=2, sticky="w", pady=(0, 4)
+        # Checkbutton pipeline automatico (requisito 3)
+        self.chk_auto = ttk.Checkbutton(
+            botonera, text="Resumir automáticamente al terminar", variable=self.var_auto_resumen
         )
+        self.chk_auto.pack(side="left", padx=(18, 0))
 
+        # --- Fila 4: Medidor VU (Canvas) + label nivel
+        medidor_frame = ttk.LabelFrame(marco, text="Micrófono", padding=6)
+        medidor_frame.grid(row=4, column=0, columnspan=2, sticky="we", pady=(2, 6))
+        medidor_frame.columnconfigure(0, weight=1)
+
+        # Canvas: barra que cambia color segun volumen
+        self._canvas_meter = tk.Canvas(medidor_frame, height=20, bg="#e0e0e0", highlightthickness=1, highlightbackground="#9e9e9e")
+        self._canvas_meter.grid(row=0, column=0, sticky="we", padx=(0, 6))
+        # Rectangulo inicial (0 ancho)
+        self._meter_bar = self._canvas_meter.create_rectangle(0, 0, 0, 20, fill="#bdbdbd", outline="")
+        # Texto overlay opcional centrado
+        self._meter_text = self._canvas_meter.create_text(120, 10, text="En espera", fill="#424242", font=("Segoe UI", 8))
+
+        self.var_nivel = tk.StringVar(value="0%")
+        ttk.Label(medidor_frame, textvariable=self.var_nivel, width=5, font=("Consolas", 9, "bold")).grid(row=0, column=1, sticky="e")
+        ttk.Label(medidor_frame, text="VU", font=("Segoe UI", 7)).grid(row=0, column=2, sticky="e", padx=(2,0))
+
+        # --- Fila 5: Estado muy visible
+        self.var_estado = tk.StringVar(value="Listo.")
+        self.lbl_estado = ttk.Label(marco, textvariable=self.var_estado, font=("Segoe UI", 10, "bold"), foreground="#1565c0")
+        self.lbl_estado.grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 4))
+
+        # --- Fila 6: Progreso
         self.progreso = ttk.Progressbar(marco, mode="indeterminate")
-        self.progreso.grid(row=5, column=0, columnspan=2, sticky="we", pady=(0, 8))
+        self.progreso.grid(row=6, column=0, columnspan=2, sticky="we", pady=(0, 8))
 
+        # --- Fila 7: Detalle (transcripcion + logs)
         contenedor = ttk.LabelFrame(marco, text="Detalle")
-        contenedor.grid(row=6, column=0, columnspan=2, sticky="nsew")
+        contenedor.grid(row=7, column=0, columnspan=2, sticky="nsew")
         self.texto = scrolledtext.ScrolledText(contenedor, wrap="word", font=("Consolas", 10))
         self.texto.pack(fill="both", expand=True)
 
         marco.columnconfigure(1, weight=1)
-        marco.rowconfigure(6, weight=1)
+        marco.rowconfigure(7, weight=1)
 
     # ------------------------------------------------------------ Grabación
     def _alternar_grabacion(self):
@@ -114,36 +142,66 @@ class CerebroApp(tk.Tk):
             messagebox.showwarning("Falta información", "Indica el número de sesión.")
             return
 
+        # Preparar ruta con anticipacion para modo streaming (evita RAM)
+        self._audio_path = self._nombre_audio()
         try:
-            self._recorder.start()
+            # Nuevo: streaming directo a disco -> RAM constante ~pocos KB
+            self._recorder.start(path=self._audio_path)
         except RuntimeError as exc:
+            self._audio_path = None
             messagebox.showerror("Micrófono", str(exc))
             return
 
         self.btn_grabar.config(text="Detener")
         self.var_estado.set(
             f"Grabando {curso} - Sesión {sesion}... "
-            f"(audio temporal en {config.TEMP_DIR})"
+            f"(streaming a {self._audio_path})"
         )
-        self._log(f"[{self._hora()}] Grabación iniciada para {curso} - Sesión {sesion}.")
+        self._log(f"[{self._hora()}] Grabación iniciada (streaming) para {curso} - Sesión {sesion}.")
+        self._log(f"[{self._hora()}] Destino: {self._audio_path}")
+        # Iniciar visualizador VU ciclico
+        self._canvas_meter.itemconfig(self._meter_text, text="Grabando...")
+        self.after(100, self._actualizar_medidor_audio)
 
     def _detener_grabacion(self):
         try:
-            audio, duracion = self._recorder.stop()
+            ret, duracion = self._recorder.stop()
+            # ret es None en modo streaming (archivo ya en self._audio_path)
+            # ret es ndarray en modo legacy -> guardar a disco
+            if ret is not None:
+                # Caso legacy inesperado en app (si start sin path) -> persistir ahora
+                import numpy as np  # local para no cargar al inicio
+                if hasattr(ret, "shape") and ret.size > 0:
+                    if not self._audio_path:
+                        self._audio_path = self._nombre_audio()
+                    self._recorder.save_wav(ret, self._audio_path)
+            # duracion precisa por muestras escritas
+            self._duracion = duracion
         except RuntimeError as exc:
             messagebox.showerror("Grabación", str(exc))
             return
 
-        self._duracion = duracion
-        self._audio_path = self._nombre_audio()
-        self._recorder.save_wav(audio, self._audio_path)
-
-        minutos = int(duracion // 60)
-        segundos = int(duracion % 60)
+        minutos = int(self._duracion // 60)
+        segundos = int(self._duracion % 60)
         self.btn_grabar.config(text="Grabar")
-        self.var_estado.set(f"Grabación guardada ({minutos}m {segundos}s). Ahora puedes transcribir.")
+        # Reset visual medidor
+        self._canvas_meter.coords(self._meter_bar, 0, 0, 0, 20)
+        self._canvas_meter.itemconfig(self._meter_bar, fill="#bdbdbd")
+        self._canvas_meter.itemconfig(self._meter_text, text="Guardado")
+        self.var_nivel.set("0%")
+
+        self.var_estado.set(f"Grabación guardada ({minutos}m {segundos}s).")
         self._log(f"[{self._hora()}] Grabación detenida ({minutos}m {segundos}s).")
         self._log(f"[{self._hora()}] Audio guardado en: {self._audio_path}")
+
+        # --- Pipeline automatico: al terminar y guardar, invocar transcripcion ---
+        if self._audio_path and os.path.exists(self._audio_path):
+            self.var_estado.set(f"Grabación guardada ({minutos}m {segundos}s). Iniciando transcripción automática...")
+            self._log(f"[{self._hora()}] Pipeline: iniciando transcripción automática...")
+            # Pequeño delay para que UI refresque antes de hilo pesado
+            self.after(400, self._iniciar_transcripcion)
+        else:
+            messagebox.showwarning("Audio no encontrado", f"No se encontró el archivo: {self._audio_path}")
 
     def _nombre_audio(self):
         config.ensure_temp_dir()
@@ -160,6 +218,9 @@ class CerebroApp(tk.Tk):
             messagebox.showwarning(
                 "Sin audio", "Primero graba y detén la grabación para tener un audio."
             )
+            return
+        if not os.path.exists(self._audio_path):
+            messagebox.showerror("Audio perdido", f"No existe el archivo:\n{self._audio_path}")
             return
         self._set_ocupado(True, "transcribir")
         threading.Thread(target=self._tarea_transcribir, daemon=True).start()
@@ -248,16 +309,92 @@ class CerebroApp(tk.Tk):
             return
         os.startfile(ruta)
 
+    # ---------------------------------------------------- Visualizador VU
+    def _actualizar_medidor_audio(self):
+        """Lee RMS thread-safe cada 100ms y actualiza Canvas VU con color semaforo."""
+        if self._recorder.active:
+            vol = float(self._recorder.current_volume)  # 0..100
+            # Geometria canvas (puede ser 1 al inicio antes de render)
+            try:
+                w = self._canvas_meter.winfo_width()
+                if w < 10:
+                    w = 240
+                h = 20
+                fill_w = int(w * vol / 100.0)
+                # Actualizar barra
+                self._canvas_meter.coords(self._meter_bar, 0, 0, fill_w, h)
+                # Color semaforo
+                if vol > 92:
+                    color = "#d32f2f"  # rojo saturacion
+                    txt = "¡SATURADO!"
+                    txt_color = "white"
+                elif vol > 70:
+                    color = "#f57c00"  # naranja alto
+                    txt = "Alto"
+                    txt_color = "white"
+                elif vol > 30:
+                    color = "#388e3c"  # verde optimo
+                    txt = "Óptimo"
+                    txt_color = "white"
+                elif vol > 5:
+                    color = "#66bb6a"  # verde bajo
+                    txt = "Bajo"
+                    txt_color = "black"
+                else:
+                    color = "#bdbdbd"  # gris silencio
+                    txt = "Silencio"
+                    txt_color = "#424242"
+                self._canvas_meter.itemconfig(self._meter_bar, fill=color)
+                self._canvas_meter.itemconfig(self._meter_text, text=txt, fill=txt_color)
+                self.var_nivel.set(f"{int(vol)}%")
+            except tk.TclError:
+                pass
+            # Re-programar mientras graba
+            self.after(100, self._actualizar_medidor_audio)
+        else:
+            # Fuera de grabacion: reset
+            try:
+                self._canvas_meter.coords(self._meter_bar, 0, 0, 0, 20)
+                self._canvas_meter.itemconfig(self._meter_bar, fill="#bdbdbd")
+                self._canvas_meter.itemconfig(self._meter_text, text="En espera", fill="#424242")
+                self.var_nivel.set("0%")
+            except tk.TclError:
+                pass
+
     # ---------------------------------------------------- Estado / cola / hilos
     def _set_ocupado(self, ocupado, accion=None):
         self._ocupado = ocupado
         self.progreso.config(mode="indeterminate" if ocupado else "determinate")
         if ocupado:
             self.progreso.start(12)
-            self.var_estado.set(_ACCIONES.get(accion, "Trabajando..."))
+            # Texto muy visible segun accion
+            texto = _ACCIONES.get(accion, "Trabajando...")
+            self.var_estado.set(texto)
+            self.lbl_estado.config(foreground="#e65100" if accion == "transcribir" else "#1565c0")
         else:
             self.progreso.stop()
             self.progreso.config(value=0)
+            # Si no hay mensaje pipeline pendiente, volver a Listo es manejado por _manejar_mensaje
+            self.lbl_estado.config(foreground="#2e7d32" if self._transcripcion else "#1565c0")
+
+        # Deshabilitar campos para evitar cambios accidentales en proceso de 2h (requisito 4)
+        estado_entry = "disabled" if ocupado else "normal"
+        for w in (self.entry_curso, self.entry_sesion, self.entry_titulo):
+            try:
+                w.config(state=estado_entry)
+            except tk.TclError:
+                pass
+        # Botones relacionados a pipeline deshabilitados durante ocupado para evitar doble disparo
+        if ocupado:
+            self.btn_transcribir.config(state="disabled")
+            self.btn_resumir.config(state="disabled")
+            self.btn_guardar.config(state="disabled")
+            self.btn_grabar.config(state="disabled")
+        else:
+            self.btn_transcribir.config(state="normal")
+            self.btn_resumir.config(state="normal")
+            self.btn_guardar.config(state="normal")
+            self.btn_grabar.config(state="normal")
 
     def _procesar_cola(self):
         try:
@@ -276,23 +413,35 @@ class CerebroApp(tk.Tk):
                 self._transcripcion = datos["texto"]
                 self.texto.delete("1.0", "end")
                 self.texto.insert("1.0", self._transcripcion)
-                self.var_estado.set(
-                    f"Transcripción lista ({datos['duracion_audio']}s de audio). Revisa y corrige el texto, luego genera el resumen."
-                )
+                # Requisito 3: texto exacto al completar
+                self.var_estado.set("Transcripción completada")
+                self.lbl_estado.config(foreground="#2e7d32")
                 self._log(f"[{self._hora()}] Transcripción completada ({datos['duracion_audio']}s).")
+                self._set_ocupado(False)
+                # Pipeline automatico a resumen si checkbox activo
+                if self.var_auto_resumen.get():
+                    self._log(f"[{self._hora()}] Pipeline automático: generando resumen...")
+                    self.var_estado.set("Transcripción completada. Generando resumen automático...")
+                    # Delay para que UI muestre estado antes de hilo
+                    self.after(600, self._iniciar_resumen)
+                else:
+                    self.var_estado.set("Transcripción completada. Pulsa 'Generar resumen' para continuar.")
             else:
                 self.var_estado.set("Error en la transcripción.")
+                self.lbl_estado.config(foreground="#c62828")
                 messagebox.showerror("Transcripción", mensaje["error"])
                 self._log(f"[{self._hora()}] ERROR transcripción: {mensaje['error']}")
-            self._set_ocupado(False)
+                self._set_ocupado(False)
 
         elif tipo == "resumen":
             if mensaje["ok"]:
                 self._resumen = mensaje["texto"]
                 self.var_estado.set("Resumen generado. Revisa el texto y guarda la nota.")
+                self.lbl_estado.config(foreground="#2e7d32")
                 self._log(f"[{self._hora()}] Resumen generado por opencode.")
             else:
                 self.var_estado.set("Error al generar el resumen.")
+                self.lbl_estado.config(foreground="#c62828")
                 messagebox.showerror("Resumen", mensaje["error"])
                 self._log(f"[{self._hora()}] ERROR resumen: {mensaje['error']}")
             self._set_ocupado(False)
