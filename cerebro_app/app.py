@@ -13,18 +13,32 @@ from .resumen import generar_resumen
 
 _ACCIONES = {
     "inicio": "Iniciando...",
-    "transcribir": "Transcribiendo... (Procesando audio)",
+    "transcribir": "Transcribiendo... (offline, sin internet)",
     "resumir": "Generando resumen con opencode...",
     "guardar": "Guardando nota en Obsidian...",
 }
+
+# Opciones de modelo para GUI: (label visible, id faster-whisper)
+_MODELOS_GUI = [
+    ("tiny — ultra rápido (40 MB, ~4 min/h)", "tiny"),
+    ("base — rápido (150 MB, ~8 min/h)", "base"),
+    ("small — equilibrado (460 MB) ⭐ recomendado", "small"),
+    ("medium — más preciso (1.5 GB, lento)", "medium"),
+    ("distil-small — EN only, 2x rápido (no español)", "distil-small"),
+    ("distil-large-v3 — alta calidad rápida (800 MB)", "distil-large-v3"),
+    ("large-v3-turbo — mejor calidad (800 MB)", "large-v3-turbo"),
+]
+# Mapa label -> id
+_MODELO_IDS = [m[1] for m in _MODELOS_GUI]
+_MODELO_LABELS = [m[0] for m in _MODELOS_GUI]
 
 
 class CerebroApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Cerebro - Grabación y notas de clase")
-        self.geometry("780x680")
-        self.minsize(660, 560)
+        self.geometry("840x700")
+        self.minsize(680, 580)
 
         self._recorder = Recorder()
         self._audio_path = None
@@ -33,6 +47,7 @@ class CerebroApp(tk.Tk):
         self._resumen = ""
         self._cola = queue.Queue()
         self._ocupado = False
+        self._progreso_val = 0
 
         self.var_auto_resumen = tk.BooleanVar(value=True)
 
@@ -62,15 +77,41 @@ class CerebroApp(tk.Tk):
         self.entry_titulo = ttk.Entry(marco, textvariable=self.var_titulo, width=32)
         self.entry_titulo.grid(row=2, column=1, sticky="we", padx=6, pady=3)
 
+        # --- Fila 2b: Modelo offline (nuevo)
+        ttk.Label(marco, text="Modelo offline").grid(row=3, column=0, sticky="w")
+        modelo_frame = ttk.Frame(marco)
+        modelo_frame.grid(row=3, column=1, sticky="we", padx=6, pady=3)
+        self.var_modelo = tk.StringVar(value=config.WHISPER_MODEL)
+        # Normaliza alias prod: distil-small.en -> distil-small para display
+        display_val = self.var_modelo.get()
+        if display_val == "distil-small.en":
+            display_val = "distil-small"
+        # Buscar label correspondiente
+        label_inicial = next((lbl for lbl, mid in _MODELOS_GUI if mid == display_val), _MODELO_LABELS[2])
+        self.combo_modelo = ttk.Combobox(modelo_frame, values=_MODELO_LABELS, state="readonly", width=42)
+        self.combo_modelo.set(label_inicial)
+        self.combo_modelo.pack(side="left")
+        # Bind cambio -> actualiza config en memoria
+        self.combo_modelo.bind("<<ComboboxSelected>>", self._on_modelo_cambiado)
+        ttk.Label(modelo_frame, text="  100% offline", font=("Segoe UI", 7), foreground="#616161").pack(side="left", padx=6)
+        # Info batched
+        batched_txt = "⚡ batched ON" if config.WHISPER_BATCHED else "batched OFF"
+        self.lbl_batched = ttk.Label(modelo_frame, text=batched_txt, font=("Consolas", 7, "bold"), foreground="#2e7d32" if config.WHISPER_BATCHED else "#c62828")
+        self.lbl_batched.pack(side="left", padx=6)
+
         # --- Fila 3: Botonera
         botonera = ttk.Frame(marco)
-        botonera.grid(row=3, column=0, columnspan=2, sticky="we", pady=8)
+        botonera.grid(row=4, column=0, columnspan=2, sticky="we", pady=8)
         self.btn_grabar = ttk.Button(botonera, text="Grabar", command=self._alternar_grabacion)
         self.btn_grabar.pack(side="left", padx=(0, 6))
         self.btn_transcribir = ttk.Button(
             botonera, text="Transcribir", command=self._iniciar_transcripcion
         )
         self.btn_transcribir.pack(side="left", padx=6)
+        self.btn_cancelar = ttk.Button(
+            botonera, text="Cancelar", command=self._cancelar_transcripcion, state="disabled"
+        )
+        self.btn_cancelar.pack(side="left", padx=2)
         self.btn_resumir = ttk.Button(
             botonera, text="Generar resumen", command=self._iniciar_resumen
         )
@@ -92,7 +133,7 @@ class CerebroApp(tk.Tk):
 
         # --- Fila 4: Medidor VU (Canvas) + label nivel
         medidor_frame = ttk.LabelFrame(marco, text="Micrófono", padding=6)
-        medidor_frame.grid(row=4, column=0, columnspan=2, sticky="we", pady=(2, 6))
+        medidor_frame.grid(row=5, column=0, columnspan=2, sticky="we", pady=(2, 6))
         medidor_frame.columnconfigure(0, weight=1)
 
         # Canvas: barra que cambia color segun volumen
@@ -110,20 +151,45 @@ class CerebroApp(tk.Tk):
         # --- Fila 5: Estado muy visible
         self.var_estado = tk.StringVar(value="Listo.")
         self.lbl_estado = ttk.Label(marco, textvariable=self.var_estado, font=("Segoe UI", 10, "bold"), foreground="#1565c0")
-        self.lbl_estado.grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        self.lbl_estado.grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
-        # --- Fila 6: Progreso
-        self.progreso = ttk.Progressbar(marco, mode="indeterminate")
-        self.progreso.grid(row=6, column=0, columnspan=2, sticky="we", pady=(0, 8))
+        # --- Fila 6: Progreso (determinate para transcripción)
+        progreso_frame = ttk.Frame(marco)
+        progreso_frame.grid(row=7, column=0, columnspan=2, sticky="we", pady=(0, 8))
+        progreso_frame.columnconfigure(0, weight=1)
+        self.progreso = ttk.Progressbar(progreso_frame, mode="determinate", maximum=100)
+        self.progreso.grid(row=0, column=0, sticky="we")
+        self.var_progreso = tk.StringVar(value="")
+        ttk.Label(progreso_frame, textvariable=self.var_progreso, width=8, font=("Consolas", 8)).grid(row=0, column=1, padx=6, sticky="e")
 
         # --- Fila 7: Detalle (transcripcion + logs)
         contenedor = ttk.LabelFrame(marco, text="Detalle")
-        contenedor.grid(row=7, column=0, columnspan=2, sticky="nsew")
+        contenedor.grid(row=8, column=0, columnspan=2, sticky="nsew")
         self.texto = scrolledtext.ScrolledText(contenedor, wrap="word", font=("Consolas", 10))
         self.texto.pack(fill="both", expand=True)
 
         marco.columnconfigure(1, weight=1)
-        marco.rowconfigure(7, weight=1)
+        marco.rowconfigure(8, weight=1)
+
+    def _on_modelo_cambiado(self, event=None):
+        label = self.combo_modelo.get()
+        # buscar id
+        for lbl, mid in _MODELOS_GUI:
+            if lbl == label:
+                self.var_modelo.set(mid)
+                config.WHISPER_MODEL = mid
+                self._log(f"[{self._hora()}] Modelo cambiado a: {mid} (próxima transcripción)")
+                break
+
+    def _cancelar_transcripcion(self):
+        try:
+            from mcp_cerebro.transcripcion import solicitar_cancelacion
+            solicitar_cancelacion()
+            self.var_estado.set("Cancelando transcripción...")
+            self._log(f"[{self._hora()}] Solicitud de cancelación enviada.")
+            self.btn_cancelar.config(state="disabled")
+        except Exception as exc:
+            messagebox.showerror("Cancelar", str(exc))
 
     # ------------------------------------------------------------ Grabación
     def _alternar_grabacion(self):
@@ -170,7 +236,6 @@ class CerebroApp(tk.Tk):
             # ret es ndarray en modo legacy -> guardar a disco
             if ret is not None:
                 # Caso legacy inesperado en app (si start sin path) -> persistir ahora
-                import numpy as np  # local para no cargar al inicio
                 if hasattr(ret, "shape") and ret.size > 0:
                     if not self._audio_path:
                         self._audio_path = self._nombre_audio()
@@ -223,13 +288,28 @@ class CerebroApp(tk.Tk):
             messagebox.showerror("Audio perdido", f"No existe el archivo:\n{self._audio_path}")
             return
         self._set_ocupado(True, "transcribir")
+        self.progreso.config(value=0)
+        self.var_progreso.set("0%")
         threading.Thread(target=self._tarea_transcribir, daemon=True).start()
 
     def _tarea_transcribir(self):
         from mcp_cerebro.transcripcion import transcribir
 
+        # Aplica modelo seleccionado en GUI (si cambió)
+        modelo_elegido = self.var_modelo.get().strip()
+        if modelo_elegido:
+            config.WHISPER_MODEL = modelo_elegido
+
+        def on_progress(idx, end_time, total_dur, snippet):
+            try:
+                pct = int(min(100, max(0, end_time / total_dur * 100))) if total_dur else 0
+                # Enviar progreso a cola (thread-safe)
+                self._cola.put({"tipo": "progreso", "pct": pct, "idx": idx, "texto": snippet[:60]})
+            except Exception:
+                pass
+
         try:
-            resultado = transcribir(self._audio_path)
+            resultado = transcribir(self._audio_path, on_progress=on_progress, modelo=modelo_elegido)
             self._cola.put({"tipo": "transcripcion", "ok": True, "datos": resultado})
         except Exception as exc:
             self._cola.put({"tipo": "transcripcion", "ok": False, "error": str(exc)})
@@ -364,37 +444,56 @@ class CerebroApp(tk.Tk):
     # ---------------------------------------------------- Estado / cola / hilos
     def _set_ocupado(self, ocupado, accion=None):
         self._ocupado = ocupado
-        self.progreso.config(mode="indeterminate" if ocupado else "determinate")
         if ocupado:
-            self.progreso.start(12)
+            if accion == "transcribir":
+                # Determinate para transcripción con % real
+                self.progreso.config(mode="determinate", maximum=100, value=0)
+                self.var_progreso.set("0%")
+            else:
+                # Indeterminate para resumen/guardar
+                self.progreso.config(mode="indeterminate")
+                self.progreso.start(12)
+                self.var_progreso.set("")
             # Texto muy visible segun accion
             texto = _ACCIONES.get(accion, "Trabajando...")
             self.var_estado.set(texto)
             self.lbl_estado.config(foreground="#e65100" if accion == "transcribir" else "#1565c0")
         else:
             self.progreso.stop()
-            self.progreso.config(value=0)
-            # Si no hay mensaje pipeline pendiente, volver a Listo es manejado por _manejar_mensaje
+            # No resetear a 0 si ya está completa (100%) para mostrar completado
+            if self.progreso.cget("mode") == "indeterminate":
+                self.progreso.config(mode="determinate", value=0)
+                self.var_progreso.set("")
             self.lbl_estado.config(foreground="#2e7d32" if self._transcripcion else "#1565c0")
 
         # Deshabilitar campos para evitar cambios accidentales en proceso de 2h (requisito 4)
         estado_entry = "disabled" if ocupado else "normal"
+        combo_state = "disabled" if ocupado else "readonly"
         for w in (self.entry_curso, self.entry_sesion, self.entry_titulo):
             try:
                 w.config(state=estado_entry)
             except tk.TclError:
                 pass
+        try:
+            self.combo_modelo.config(state=combo_state)
+        except tk.TclError:
+            pass
         # Botones relacionados a pipeline deshabilitados durante ocupado para evitar doble disparo
         if ocupado:
             self.btn_transcribir.config(state="disabled")
             self.btn_resumir.config(state="disabled")
             self.btn_guardar.config(state="disabled")
             self.btn_grabar.config(state="disabled")
+            if accion == "transcribir":
+                self.btn_cancelar.config(state="normal")
+            else:
+                self.btn_cancelar.config(state="disabled")
         else:
             self.btn_transcribir.config(state="normal")
             self.btn_resumir.config(state="normal")
             self.btn_guardar.config(state="normal")
             self.btn_grabar.config(state="normal")
+            self.btn_cancelar.config(state="disabled")
 
     def _procesar_cola(self):
         try:
@@ -407,16 +506,37 @@ class CerebroApp(tk.Tk):
 
     def _manejar_mensaje(self, mensaje):
         tipo = mensaje["tipo"]
+        if tipo == "progreso":
+            pct = int(mensaje.get("pct", 0))
+            # Actualiza barra determinate
+            try:
+                self.progreso.config(value=pct)
+                self.var_progreso.set(f"{pct}%")
+                # Opcional: muestra snippet en estado sin saturar
+                # self.var_estado.set(f"Transcribiendo... {pct}%")
+            except tk.TclError:
+                pass
+            return
         if tipo == "transcripcion":
             if mensaje["ok"]:
                 datos = mensaje["datos"]
                 self._transcripcion = datos["texto"]
                 self.texto.delete("1.0", "end")
                 self.texto.insert("1.0", self._transcripcion)
+                # Barra a 100%
+                try:
+                    self.progreso.config(value=100)
+                    self.var_progreso.set("100%")
+                except tk.TclError:
+                    pass
                 # Requisito 3: texto exacto al completar
                 self.var_estado.set("Transcripción completada")
                 self.lbl_estado.config(foreground="#2e7d32")
-                self._log(f"[{self._hora()}] Transcripción completada ({datos['duracion_audio']}s).")
+                rtf = datos.get("rtf")
+                tiempo = datos.get("tiempo_transcripcion")
+                modelo = datos.get("modelo", "?")
+                batched = "⚡batched" if datos.get("batched") else "estándar"
+                self._log(f"[{self._hora()}] Transcripción completada ({datos['duracion_audio']}s, modelo={modelo}, {batched}, {tiempo}s, RTF={rtf}).")
                 self._set_ocupado(False)
                 # Pipeline automatico a resumen si checkbox activo
                 if self.var_auto_resumen.get():
@@ -429,8 +549,16 @@ class CerebroApp(tk.Tk):
             else:
                 self.var_estado.set("Error en la transcripción.")
                 self.lbl_estado.config(foreground="#c62828")
-                messagebox.showerror("Transcripción", mensaje["error"])
-                self._log(f"[{self._hora()}] ERROR transcripción: {mensaje['error']}")
+                # Mensaje cancelación es esperado, no crítico
+                if "cancelada" in mensaje["error"].lower():
+                    self._log(f"[{self._hora()}] Transcripción cancelada.")
+                    self.var_estado.set("Transcripción cancelada.")
+                    self.lbl_estado.config(foreground="#616161")
+                    self.progreso.config(value=0)
+                    self.var_progreso.set("")
+                else:
+                    messagebox.showerror("Transcripción", mensaje["error"])
+                    self._log(f"[{self._hora()}] ERROR transcripción: {mensaje['error']}")
                 self._set_ocupado(False)
 
         elif tipo == "resumen":

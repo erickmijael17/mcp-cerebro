@@ -63,17 +63,21 @@ def detener_grabacion(curso: str, sesion: int) -> str:
 
 
 @mcp.tool()
-def transcribir_audio(archivo: str = None) -> str:
-    """Transcribe el audio con Whisper local (español). Si no se indica archivo,
-    usa la grabación más reciente de la carpeta temporal.
+def transcribir_audio(archivo: str = None, modelo: str = None) -> str:
+    """Transcribe el audio con Whisper local offline (español, rápido, sin internet).
+
+    Optimizado: beam=1 (greedy), batched, VAD silencios 500ms, chunk 30s.
+    Modelos: tiny/base/small/medium, distil-small, distil-large-v3, large-v3-turbo.
+    Si no se indica archivo, usa la grabación más reciente de la carpeta temporal.
 
     Args:
         archivo: Ruta opcional al archivo .wav a transcribir.
+        modelo: Modelo Whisper opcional (ej. "small", "distil-small", "large-v3-turbo"). Default: CEREBRO_WHISPER_MODEL.
     """
     from .transcripcion import transcribir
 
     try:
-        resultado = transcribir(archivo)
+        resultado = transcribir(archivo, modelo=modelo)
     except Exception as exc:
         return f"ERROR: {exc}"
 
@@ -81,11 +85,56 @@ def transcribir_audio(archivo: str = None) -> str:
     if not texto:
         return "La grabación no contiene voz detectable. Verifica que el micrófono haya capturado audio."
 
+    rtf = resultado.get("rtf", "?")
+    tiempo = resultado.get("tiempo_transcripcion", "?")
+    batched = "batched" if resultado.get("batched") else "estandar"
     return (
         f"Transcripción completada ({resultado['duracion_audio']}s de audio, "
-        f"{len(resultado['segmentos'])} segmentos).\n\n"
+        f"{len(resultado['segmentos'])} segmentos, modelo={resultado.get('modelo')}, "
+        f"{batched}, {tiempo}s, RTF={rtf}).\n\n"
         f"TEXTO:\n{texto}"
     )
+
+
+@mcp.tool()
+def listar_modelos() -> str:
+    """Lista modelos Whisper disponibles para transcripción offline y su velocidad relativa."""
+    from .transcripcion import listar_modelos
+
+    modelos = listar_modelos()
+    # Anotamos los más rápidos
+    notas = {
+        "tiny": "ultra rápido, menor precisión",
+        "base": "rápido",
+        "small": "equilibrado ⭐",
+        "medium": "lento, más preciso",
+        "distil-small.en": "2x más rápido que small",
+        "distil-large-v3": "rápido + alta calidad",
+        "large-v3-turbo": "mejor calidad, rápido",
+    }
+    lineas = ["Modelos disponibles (offline, sin internet):"]
+    for m in modelos:
+        extra = f" — {notas[m]}" if m in notas else ""
+        marca = " [actual]" if m == config.WHISPER_MODEL or (config.WHISPER_MODEL == "distil-small" and m == "distil-small.en") else ""
+        lineas.append(f" - {m}{extra}{marca}")
+    lineas.append(f"\nActual: CEREBRO_WHISPER_MODEL={config.WHISPER_MODEL}, beam={config.WHISPER_BEAM_SIZE}, batched={config.WHISPER_BATCHED}, compute={config.WHISPER_COMPUTE_TYPE}")
+    return "\n".join(lineas)
+
+
+@mcp.tool()
+def descargar_modelo(modelo: str) -> str:
+    """Precarga un modelo Whisper para uso offline (requiere internet solo esta vez).
+
+    Args:
+        modelo: Nombre del modelo (ej. "small", "distil-small", "large-v3-turbo").
+    """
+    from .transcripcion import descargar_modelo as _descargar
+
+    try:
+        res = _descargar(modelo)
+        return f"Modelo {res['modelo']} listo en {res['path']} (offline desde ahora)."
+    except Exception as exc:
+        return f"ERROR: {exc}"
 
 
 @mcp.tool()

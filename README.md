@@ -73,7 +73,9 @@ como herramientas para que un asistente de IA (p. ej. opencode) las use en conve
 |-----------------------|----------------------------------------------------------|
 | `iniciar_grabacion`   | Inicia la grabación del micrófono (curso, sesión).       |
 | `detener_grabacion`   | Detiene y guarda el audio `.wav` temporal.               |
-| `transcribir_audio`   | Transcribe con Whisper local (español).                  |
+| `transcribir_audio`   | Transcribe con Whisper local offline (español, `beam=1`, batched, sin internet). |
+| `listar_modelos`      | Lista modelos disponibles y velocidad estimada.           |
+| `descargar_modelo`    | Precarga un modelo para uso 100% offline.                |
 | `crear_nota`          | Escribe `S<N> - Título.md` en la carpeta del curso.      |
 
 ---
@@ -84,7 +86,7 @@ como herramientas para que un asistente de IA (p. ej. opencode) las use en conve
 |-----------------|-----------------------------------------------------|
 | **Lenguaje**    | Python 3.10+                                        |
 | **GUI**         | Tkinter (incluido en Python, sin dependencias extra)|
-| **Transcripción**| faster-whisper (modelo Whisper `small`, local/offline)|
+| **Transcripción**| faster-whisper + BatchedInferencePipeline (offline, `int8`, `beam=1`, VAD 500ms, modelos `tiny`/`small`/`medium`/`turbo`) |
 | **Audio**       | sounddevice + numpy + scipy                         |
 | **Protocolo**   | Model Context Protocol (MCP) con FastMCP            |
 | **Resumen IA**  | opencode (llamado en segundo plano, modelo a elección)|
@@ -135,7 +137,9 @@ pip install -r requirements.txt
 ```
 
 La primera transcripción descarga el modelo Whisper (`small`, ≈ 460 MB) a la
-carpeta temporal del proyecto. Audios largos (más de ~30 min) se procesan por partes automáticamente.
+carpeta temporal del proyecto. Audios largos (más de ~30 min) se procesan por partes automáticamente con VAD + chunking.
+
+> **Transcripción offline rápida (nuevo):** Ahora usa `beam=1` (greedy), `BatchedInferencePipeline` (batch 8), `int8` y VAD `500ms` para 3-5x más velocidad en CPU. Selector de modelo en la GUI y progreso real con % y botón Cancelar. Ver `scripts/bench_transcripcion.py`.
 
 ## ⚙️ Configuración
 
@@ -145,7 +149,14 @@ Toda la configuración se hace con **variables de entorno**:
 |-----------------------|-------------------------------------------|--------------------|
 | `CEREBRO_VAULT_PATH`  | Ruta del vault de Obsidian.               | `Cerebro universitario` (junto al proyecto) |
 | `CEREBRO_TEMP_DIR`    | Carpeta para audios y modelos.            | `temporal/`        |
-| `CEREBRO_WHISPER_MODEL` | Modelo Whisper: `tiny`, `small`, `medium`. | `small`          |
+| `CEREBRO_WHISPER_MODEL` | Modelo Whisper: `tiny` (40MB, ~4min/h), `base`, `small` ⭐, `medium`, `large-v3-turbo`, `distil-large-v3` | `small` |
+| `CEREBRO_WHISPER_COMPUTE` | `int8` (rápido, recomendado), `int8_float16`, `float16` | `int8` |
+| `CEREBRO_WHISPER_BEAM` | Beam size: `1` (greedy rápido) .. `5` (preciso lento) | `1` |
+| `CEREBRO_WHISPER_BATCHED` | `1` usa `BatchedInferencePipeline` (más rápido), `0` desactiva | `1` |
+| `CEREBRO_WHISPER_BATCH_SIZE` | Tamaño batch para batched pipeline | `8` |
+| `CEREBRO_WHISPER_LANGUAGE` | Lenguaje fijo (`es` evita detección) | `es` |
+| `CEREBRO_VAD_MIN_SILENCE_MS` | Silencio mínimo para separar segmentos VAD | `500` |
+| `CEREBRO_VAD_THRESHOLD` | Umbral VAD Silero (0.3-0.7) | `0.5` |
 
 ### Ejemplo de uso como MCP en opencode
 
@@ -187,7 +198,8 @@ Registra el servidor en tu configuración de opencode:
 | "No se encontró opencode" al resumir | Instala opencode o agrégalo al `PATH` y reinicia la app. |
 | "No se pudo acceder al micrófono" | Cierra apps que usen el micrófono (Zoom, Teams) y verifica que no esté silenciado. |
 | "La grabación no contiene voz" | Acerca el micrófono y sube el volumen de captura. |
-| Transcripción lenta | Es normal en CPU con el modelo `small`; usa `tiny` para mayor velocidad. |
+| Transcripción lenta | Es normal en CPU con `small`; usa `tiny` (~4 min/h) o verifica `CEREBRO_WHISPER_BATCHED=1` y `CEREBRO_WHISPER_BEAM=1`. Usa `scripts/bench_transcripcion.py` para medir RTF. |
+| "Modelo EN only" al usar distil-small | `distil-small` es solo inglés; para español rápido usa `small` o `distil-large-v3`. |
 
 ---
 
